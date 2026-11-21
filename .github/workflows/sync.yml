@@ -1,0 +1,55 @@
+name: daily frappe mirror sync
+
+# UTC 22:00 = Beijing 06:00 next day
+on:
+  schedule:
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { repo: frappe,  branch: version-16 }
+          - { repo: erpnext, branch: version-16 }
+          - { repo: hrms,    branch: version-16 }
+          - { repo: frappe,  branch: develop }
+          - { repo: erpnext, branch: develop }
+          - { repo: hrms,    branch: develop }
+    steps:
+      - name: Clone upstream branch (full single-branch history)
+        run: |
+          git clone --no-checkout --single-branch --branch ${{ matrix.branch }} \
+            https://github.com/frappe/${{ matrix.repo }}.git src
+          cd src
+          git checkout -q -B ${{ matrix.branch }}
+          git config user.name "frappe-mirror"
+          git config user.email "mirror@localhost"
+
+      - name: Point git dependencies to Gitee (frappe only)
+        if: matrix.repo == 'frappe'
+        working-directory: src
+        run: |
+          GITEE=https://gitee.com/xjian577
+          for f in pyproject.toml package.json yarn.lock; do
+            [ -f "$f" ] || continue
+            sed -i "s|git+https://github.com/frappe/pypika@|git+$GITEE/pypika@|g" "$f"
+            sed -i "s|git+https://github.com/frappe/gunicorn@|git+$GITEE/gunicorn@|g" "$f"
+            sed -i "s|git+https://github.com/frappe/air-datepicker|git+$GITEE/air-datepicker|g" "$f"
+          done
+          git add -A
+          git commit -q -m "chore(mirror): point git deps to gitee mirrors" --allow-empty
+
+      - name: Push branch to GitCode
+        working-directory: src
+        env:
+          GC_USER: ${{ secrets.GITCODE_USER }}
+          GC_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          DEST="https://${GC_USER}:${GC_TOKEN}@gitcode.com/${GC_USER}/${{ matrix.repo }}.git"
+          git commit -q -m "chore(mirror): daily sync" --allow-empty
+          git push --force "$DEST" "HEAD:refs/heads/${{ matrix.branch }}"
+          echo "pushed ${{ matrix.repo }}/${{ matrix.branch }}"
