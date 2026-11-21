@@ -9,8 +9,12 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # 防止单个任务无限挂住（GitHub 默认 360 分钟太长）
+    timeout-minutes: 20
     strategy:
       fail-fast: false
+      # 最多 2 个并行，避免同时打爆 GitCode 免费仓库
+      max-parallel: 2
       matrix:
         include:
           - { repo: frappe,  branch: version-16 }
@@ -28,6 +32,7 @@ jobs:
           git checkout -q -B ${{ matrix.branch }}
           git config user.name "frappe-mirror"
           git config user.email "mirror@localhost"
+          echo "UPSTREAM_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Point git dependencies to Gitee (frappe only)
         if: matrix.repo == 'frappe'
@@ -40,16 +45,34 @@ jobs:
             sed -i "s|git+https://github.com/frappe/gunicorn@|git+$GITEE/gunicorn@|g" "$f"
             sed -i "s|git+https://github.com/frappe/air-datepicker|git+$GITEE/air-datepicker|g" "$f"
           done
-          git add -A
-          git commit -q -m "chore(mirror): point git deps to gitee mirrors" --allow-empty
+          # 只有真的改了文件才提交，避免无意义的空提交
+          if ! git diff --quiet; then
+            git add -A
+            git commit -q -m "chore(mirror): point git deps to gitee mirrors"
+          fi
 
       - name: Push branch to GitCode
         working-directory: src
         env:
           GC_USER: ${{ secrets.GITCODE_USER }}
           GC_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          GIT_TERMINAL_PROMPT: '0'
         run: |
+          set -e
+
+          # 先看 GitCode 上的版本是不是已经跟上游了；是就跳过，不再重复强推
+          REMOTE_JSON=$(curl -fsS "https://gitcode.com/api/v5/repos/${GC_USER}/${{ matrix.repo }}/branches/${{ matrix.branch }}" || echo '{}')
+          REMOTE_PARENT=$(echo "$REMOTE_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(((d.get("commit") or {}).get("parent_ids") or [None])[0] or "")' 2>/dev/null || echo "")
+          if [ "$REMOTE_PARENT" = "$UPSTREAM_SHA" ]; then
+            echo "SKIP: GitCode already has upstream $UPSTREAM_SHA for ${{ matrix.repo }}/${{ matrix.branch }}"
+            exit 0
+          fi
+
+          # 网络假死保护：低速持续 120 秒就断开，而不是挂 50 分钟
+          git config http.lowSpeedLimit 1024
+          git config http.lowSpeedTime 120
+
           DEST="https://${GC_USER}:${GC_TOKEN}@gitcode.com/${GC_USER}/${{ matrix.repo }}.git"
           git commit -q -m "chore(mirror): daily sync" --allow-empty
           git push --force "$DEST" "HEAD:refs/heads/${{ matrix.branch }}"
-          echo "pushed ${{ matrix.repo }}/${{ matrix.branch }}"
+          echo "PUSHED: ${{ matrix.repo }}/${{ matrix.branch }}"
