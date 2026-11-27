@@ -20,9 +20,9 @@ jobs:
           - { repo: frappe,  branch: version-16 }
           - { repo: erpnext, branch: version-16 }
           - { repo: hrms,    branch: version-16 }
-          - { repo: frappe,  branch: develop }
-          - { repo: erpnext, branch: develop }
-          - { repo: hrms,    branch: develop }
+#          - { repo: frappe,  branch: develop }
+#          - { repo: erpnext, branch: develop }
+#          - { repo: hrms,    branch: develop }
     steps:
       - name: Clone upstream branch (full single-branch history)
         run: |
